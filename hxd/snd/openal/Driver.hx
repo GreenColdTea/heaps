@@ -191,14 +191,33 @@ class Driver implements hxd.snd.Driver {
 			return;
 		#if (hl && hlopenal >= version("1.16.0"))
 		var now = haxe.Timer.stamp();
+		
 		if( now - lastUpdate > 0.5 ) {
 			lastUpdate = now;
-			// Detect device change and reopen default
-			var bytes = ALC.getString(null, ALC.ALL_DEVICES_SPECIFIER);
-			var specifier = bytes == null ? null : @:privateAccess String.fromUTF8(bytes);
-			if( specifier != currentSpecifier ) {
+			
+			var statusBytes = getTmpBytes(4);
+			ALC.getIntegerv(device, openal.ExtALC.CONNECTED, 1, statusBytes);
+
+			var isConnected = statusBytes.getInt32(0) != ALC.FALSE;
+			var alcError = ALC.getError(device);
+			var hasFatalError = alcError == ALC.INVALID_DEVICE;
+
+			var specBytes = ALC.getString(null, ALC.ALL_DEVICES_SPECIFIER);
+			var specifier = specBytes == null ? null : @:privateAccess String.fromUTF8(specBytes);
+			var deviceChanged = specifier != currentSpecifier;
+
+			if( !isConnected || hasFatalError || deviceChanged ) {
 				currentSpecifier = specifier;
-				openal.ExtALC.reopenDeviceSoft(device, null, null);
+				
+				var success = openal.ExtALC.reopenDeviceSoft(device, null, null);
+				
+				#if debug
+				if (!success) {
+					trace("ALSOFT (EE): Failed to reopen device! Audio context might be dead.");
+				} else if (!isConnected || hasFatalError) {
+					trace("ALSOFT (II): Recovered from dead audio device.");
+				}
+				#end
 			}
 		}
 		#end
