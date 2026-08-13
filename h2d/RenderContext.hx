@@ -776,8 +776,8 @@ class RenderContext extends h3d.impl.RenderContext {
 			return false;
 
 		var stride = 8;
-		if( hasBuffering() && currentObj != null && (texture != this.texture || stride != this.stride || obj.blendMode != currentObj.blendMode || obj.filter != currentObj.filter) )
-			flush();
+		if( hasBuffering() && currentObj != null && (texture != this.texture || stride != this.stride || obj.blendMode != currentObj.blendMode || obj.filter != currentObj.filter || obj.smooth != currentObj.smooth) )
+    		flush();
 		var shaderChanged = needInitShaders, paramsChanged = false;
 		var objShaders = obj.shaders;
 		var curShaders = currentShaders.next;
