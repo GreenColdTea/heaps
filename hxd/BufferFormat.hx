@@ -391,14 +391,37 @@ class BufferFormat {
 	static var ALL_FORMATS = new Map<String,Array<BufferFormat>>();
 
 	public static function fromID( uid : Int ) {
+		#if heaps_mt_hxsl_cache
+		makeMutex.acquire();
+		#end
+		var found = null;
 		for( fl in ALL_FORMATS )
 			for( f in fl )
-				if( f.uid == uid )
-					return f;
-		return null;
+				if( f.uid == uid ) {
+					found = f;
+					break;
+				}
+		#if heaps_mt_hxsl_cache
+		makeMutex.release();
+		#end
+		return found;
 	}
 
+	#if heaps_mt_hxsl_cache
+	static var makeMutex = new sys.thread.Mutex();
+	#end
 	public static function make( inputs : Array<BufferInput> ) {
+		#if heaps_mt_hxsl_cache
+		makeMutex.acquire();
+		var fmt = makeUnsafe(inputs);
+		makeMutex.release();
+		return fmt;
+		#else
+		return makeUnsafe(inputs);
+		#end
+	}
+
+	static function makeUnsafe( inputs : Array<BufferInput> ) {
 		var names = [];
 		for( b in inputs )
 			names.push(b.name);

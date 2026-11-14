@@ -103,6 +103,7 @@ class RuntimeShader {
 	public var signature : String;
 	public var mode : LinkMode;
 	public var spec : { instances : Array<ShaderInstanceDesc>, signature : String };
+	@:allow(h3d.Engine) var failed : String;
 
 	public function new() {
 		#if heaps_mt_hxsl_cache
@@ -124,6 +125,16 @@ class RuntimeShader {
 
 	public function getShaders() {
 		return mode == Compute ? [compute] : [vertex, fragment];
+	}
+
+	public function releaseData() {
+		inline function release( s : RuntimeShaderData ) {
+			// vars and code are kept: the driver needs them to recompile the shader after a context loss
+			if( s != null && (s.data.funs == null || s.data.funs.length > 0) )
+				s.data = SharedShader.compactMem({ name : s.data.name, vars : s.data.vars, funs : [] });
+		}
+		release(vertex);
+		release(fragment);
 	}
 
 	public function getInputFormat( instance=false ) {

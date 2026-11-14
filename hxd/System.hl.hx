@@ -67,13 +67,11 @@ class System {
 	}
 
 	static function mainLoop() {
-		#if dlss
 		var engine = h3d.Engine.getCurrent();
 		if( engine != null && engine.ready ) {
-			engine.driver.reflexSleep();
-			engine.driver.pclSimulationStart();
+			engine.driver.upscaling.lowLatencySleep();
+			engine.driver.upscaling.latencyMarker(SimulationStart);
 		}
-		#end
 
 		// process events
 		#if usesys
@@ -186,11 +184,9 @@ class System {
 			if( check_reload() ) onReload();
 			#end
 		}
-		#if dlss
 		var engine = h3d.Engine.getCurrent();
 		if( engine != null )
-			engine.driver.shutdownDLSS();
-		#end
+			engine.driver.upscaling.dispose();
 		Sys.exit(0);
 	}
 
@@ -255,7 +251,7 @@ class System {
 
 		var but = new hl.UI.Button(f, "Exit");
 		but.onClick = function() {
-			Sys.exit(0);
+			Sys.exit(1);
 		};
 
 		while( hl.UI.loop(true) != Quit )
@@ -375,6 +371,8 @@ class System {
 	public static function getDeviceName() : String {
 		#if usesys
 		return haxe.System.name;
+		#elseif hlvk
+		return "PC/" + vk.Vk.getDeviceName();
 		#elseif hlsdl
 		return "PC/" + sdl.Sdl.getDevices()[0];
 		#elseif (hldx && dx12)

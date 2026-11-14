@@ -1,10 +1,19 @@
 package h3d.scene.pbr;
 
+enum LightUnit {
+	Unitless;
+	Lumen;
+	Candela;
+	Lux;
+}
+
 class Light extends h3d.scene.Light {
 
 	var _color : h3d.Vector;
 	var primitive : h3d.prim.Primitive;
 	public var power : Float = 1.;
+	public var unit : LightUnit = Unitless;
+	public var inverseSquareFalloff : Bool = false;
 	public var shadows : h3d.pass.Shadows;
 	public var isMainLight = false;
 	public var occlusionFactor : Float = 0.;
@@ -39,6 +48,26 @@ class Light extends h3d.scene.Light {
 
 	override function set_color(v:h3d.Vector) {
 		return _color = v;
+	}
+
+	public function getIntensity() : Float {
+		return switch( unit ) {
+		case Unitless: getUnitlessIntensity();
+		case Lumen: power * getCandelaPerLumen();
+		case Candela, Lux: power;
+		}
+	}
+
+	function getUnitlessIntensity() : Float {
+		return power * power;
+	}
+
+	function getCandelaPerLumen() : Float {
+		return 1 / (4 * Math.PI);
+	}
+
+	function hasInverseSquareFalloff() {
+		return inverseSquareFalloff || unit != Unitless;
 	}
 
 	public function inFrustum(frustum : h3d.col.Frustum) {

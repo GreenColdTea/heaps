@@ -55,6 +55,7 @@ class GlslOut {
 		}
 		set(ToInt, "int");
 		set(ToFloat, "float");
+		set(ToUInt, "uint");
 		set(ToBool, "bool");
 		set(LReflect, "reflect");
 		set(Mat3x4, "_mat3x4");
@@ -91,6 +92,7 @@ class GlslOut {
 	var allNames : Map<String, Int>;
 	var outIndexes : Map<Int, Int>;
 	var isCompute : Bool;
+	var highpUniforms : Bool;
 
 	var isES(get,never) : Bool;
 	var isES2(get,never) : Bool;
@@ -146,7 +148,7 @@ class GlslOut {
 		switch( t ) {
 		case TVoid:
 			add("void");
-		case TInt:
+		case TInt, TEnum(_):
 			add("int");
 		case TBytes(n):
 			add("vec");
@@ -244,6 +246,7 @@ class GlslOut {
 			var v = v.clone();
 			#end
 			v.type = TArray(t,size);
+			if( highpUniforms ) add("highp ");
 			addVar(v);
 			v.type = TBuffer(t,size,kind);
 			add("; }");
@@ -498,6 +501,7 @@ class GlslOut {
 			add(", 0., 1.)");
 		case TCall( { e : TGlobal(g = AtomicAdd|AtomicAnd|AtomicOr) }, args):
 			add(getFunName(g,args,e.t));
+			add("(");
 			addValue(args[0], tabs);
 			add("[");
 			addValue(args[1], tabs);
@@ -622,12 +626,13 @@ class GlslOut {
 			locals.set(v.id, v);
 			switch( it.e ) {
 			case TBinop(OpInterval, e1, e2):
+				var n = varName(v);
 				add("for(");
-				add(v.name+"=");
+				add(n+"=");
 				addValue(e1,tabs);
-				add(";"+v.name+"<");
+				add(";"+n+"<");
 				addValue(e2,tabs);
-				add(";" + v.name+"++) ");
+				add(";" + n+"++) ");
 				addBlock(loop, tabs);
 			default:
 				throw "assert";
@@ -767,6 +772,8 @@ class GlslOut {
 				var format = "rgba".substr(0, chans);
 				add('layout(${format}32f, binding=${rwTextures}) uniform ');
 				rwTextures += n;
+			case TArray(TVec(4, VFloat), _) if( highpUniforms ):
+				add("uniform highp ");
 			default:
 				add("uniform ");
 			}
@@ -848,6 +855,7 @@ class GlslOut {
 		var f = s.funs[0];
 		isVertex = f.kind == Vertex;
 		isCompute = f.kind == Main;
+		highpUniforms = isES && f.kind == Fragment && (foundGlobals.exists(FloatBitsToInt) || foundGlobals.exists(FloatBitsToUint));
 
 		if( isCompute ) {
 			// no prec
