@@ -362,7 +362,11 @@ class Manager {
 				#end
 				playedSamples = 0;
 			}
-			c.position = s.start / targetRate + playedSamples / s.buffers[0].sampleRate;
+			
+			var newPos = s.start / s.buffers[0].sampleRate + playedSamples / s.buffers[0].sampleRate;
+			if (newPos > c.duration) newPos = c.duration;
+			c.position = newPos;
+			
 			c.positionChanged = false;
 
 			// enqueue next buffers
