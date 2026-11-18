@@ -8,6 +8,7 @@ enum abstract ImageFormat(Int) {
 	var Dds = 4;
 	var Raw = 5;
 	var Hdr = 6;
+	var Sdl = 7;
 
 	/*
 		Tells if we might not be able to directly decode the image without going through a loadBitmap async call.
@@ -35,6 +36,7 @@ enum abstract ImageFormat(Int) {
 			case Dds: "DDS";
 			case Raw: "RAW";
 			case Hdr: "HDR";
+			case Sdl: "SDL";
 		};
 	}
 }
@@ -103,55 +105,6 @@ class Image extends Resource {
 		f.fetch(256); // should be enough to fit DDS header
 		var head = try f.readUInt16() catch (e:haxe.io.Eof) 0;
 		switch (head) {
-			case 0xD8FF: // JPG
-				inf.dataFormat = Jpg;
-				inf.pixelFormat = BGRA;
-				f.bigEndian = true;
-				while (true) {
-					switch (f.readUInt16()) {
-						case 0xFFC2, 0xFFC1, 0xFFC0:
-							var len = f.readUInt16();
-							var prec = f.readByte();
-							inf.height = f.readUInt16();
-							inf.width = f.readUInt16();
-							break;
-						default:
-							f.skip(f.readUInt16() - 2);
-					}
-				}
-			case 0x5089: // PNG
-				inf.dataFormat = Png;
-				f.bigEndian = true;
-				f.skip(6); // header
-				while (true) {
-					var dataLen = f.readInt32();
-					if (f.readInt32() == ('I'.code << 24) | ('H'.code << 16) | ('D'.code << 8) | 'R'.code) {
-						inf.width = f.readInt32();
-						inf.height = f.readInt32();
-						var colbits = f.readByte();
-						var colType = f.readByte();
-						inf.pixelFormat = switch ([colbits, colType]) {
-							case [1, _]: BGRA;
-							case [2, _]: BGRA;
-							case [4, _]: BGRA;
-							case [8, _]: BGRA; // TODO : grayscale png image
-							case [16, 0]: R16U;
-							case [16, 2]: RGBA16U; // RGB16U is not supported on DirectX !
-							case [16, 4]: RG16U; // gray + alpha
-							case [16, 6]: RGBA16U;
-							default: throw "Unsupported png format " + colbits + "/" + colType + "(" + entry.path + ")";
-						}
-						break;
-					}
-					f.skip(dataLen + 4); // CRC
-				}
-			case 0x4947: // GIF
-				inf.dataFormat = Gif;
-				inf.pixelFormat = BGRA;
-				f.readInt32(); // skip
-				inf.width = f.readUInt16();
-				inf.height = f.readUInt16();
-
 			case 0x4444: // DDS
 				inf.dataFormat = Dds;
 				f.skip(10);
@@ -259,20 +212,12 @@ class Image extends Resource {
 				}
 
 			case 0x3F23: // HDR RADIANCE
-
 				inf.dataFormat = Hdr;
 				while (f.readLine() != "") {}
 				var parts = f.readLine().split(" ");
 				inf.pixelFormat = RGBA32F;
 				inf.height = Std.parseInt(parts[1]);
 				inf.width = Std.parseInt(parts[3]);
-
-			case _ if (entry.extension == "tga"):
-				inf.dataFormat = Tga;
-				inf.pixelFormat = ARGB;
-				f.skip(10);
-				inf.width = f.readUInt16();
-				inf.height = f.readUInt16();
 
 			case _ if (entry.extension == "raw"):
 				inf.dataFormat = Raw;
@@ -289,10 +234,30 @@ class Image extends Resource {
 				inf.width = inf.height = size;
 
 			default:
+				f.close();
+				f = null;
+				#if hl
+				var bytes = getData();
+				var w = 0;
+				var h = 0;
+				if (!format.hl.Native.imgInfo(bytes.getData(), bytes.length, w, h))
+					throw "Unsupported texture format " + entry.path;
+				inf.dataFormat = switch (head) {
+					case 0xD8FF: Jpg;
+					case 0x5089: Png;
+					case 0x4947: Gif;
+					default: entry.extension == "tga" ? Tga : Sdl;
+				};
+				inf.pixelFormat = BGRA;
+				inf.width = w;
+				inf.height = h;
+				#else
 				throw "Unsupported texture format " + entry.path;
+				#end
 		}
 
-		f.close();
+		if (f != null)
+			f.close();
 		if (inf.pixelFormat == null)
 			throw "Unsupported internal format (" + entry.path + ")";
 
@@ -316,89 +281,17 @@ class Image extends Resource {
 		if (index == null)
 			index = 0;
 		switch (getInfo().dataFormat) {
-			case Png:
+			case Png, Jpg, Gif, Tga, Sdl:
 				var bytes = getData(); // using getTmpBytes cause bug in E2
 				#if hl
 				if (fmt == null)
 					fmt = inf.pixelFormat;
-				pixels = decodePNG(bytes, inf.width, inf.height, fmt);
+				pixels = decodeSDL(bytes, inf.width, inf.height, fmt);
 				if (pixels == null)
-					throw "Failed to decode PNG " + entry.path;
+					throw "Failed to decode image " + entry.path;
 				#else
-				var png = new format.png.Reader(new haxe.io.BytesInput(bytes));
-				png.checkCRC = false;
-				pixels = Pixels.alloc(inf.width, inf.height, inf.pixelFormat);
-				var pdata = png.read();
-				switch (inf.pixelFormat) {
-					case BGRA:
-						format.png.Tools.extract32(pdata, pixels.bytes, false);
-					case R16U, RG16U, RGB16U, RGBA16U:
-						format.png.Tools.extract(pdata, pixels.bytes, inf.pixelFormat == RGBA16U && format.png.Tools.getHeader(pdata)
-							.color.match(ColTrue(false)));
-					default:
-						throw "No support to decode " + inf.pixelFormat + " on this platform (" + entry.path + ")";
-				}
+				throw "Unsupported texture format " + entry.path;
 				#end
-			case Gif:
-				var bytes = getData();
-				var gif = new format.gif.Reader(new haxe.io.BytesInput(bytes)).read();
-				if (fmt == RGBA)
-					pixels = new Pixels(inf.width, inf.height, format.gif.Tools.extractFullRGBA(gif, 0), RGBA);
-				else
-					pixels = new Pixels(inf.width, inf.height, format.gif.Tools.extractFullBGRA(gif, 0), BGRA);
-			case Jpg:
-				var bytes = getData();
-				#if hl
-				if (fmt == null)
-					fmt = inf.pixelFormat;
-				pixels = decodeJPG(bytes, inf.width, inf.height, fmt);
-				if (pixels == null)
-					throw "Failed to decode JPG " + entry.path;
-				#else
-				if (inf.pixelFormat != BGRA)
-					throw "No support to decode " + inf.pixelFormat + " on this platform (" + entry.path + ")";
-				var p = try NanoJpeg.decode(bytes) catch (e:Dynamic) throw "Failed to decode JPG " + entry.path + " (" + e + ")";
-				pixels = new Pixels(p.width, p.height, p.pixels, BGRA);
-				#end
-			case Tga:
-				var bytes = getData();
-				var r = new format.tga.Reader(new haxe.io.BytesInput(bytes)).read();
-				if (r.header.imageType != UncompressedTrueColor || r.header.bitsPerPixel != 32)
-					throw "Not supported TGA " + r.header.imageType + "/" + r.header.bitsPerPixel;
-				var w = r.header.width;
-				var h = r.header.height;
-				if (fmt == RGBA) {
-					pixels = hxd.Pixels.alloc(w, h, RGBA);
-					var bytes = pixels.bytes;
-					#if hl
-					var bytes:hl.Bytes = bytes;
-					inline function set(i, c)
-						bytes.setI32(i << 2, c);
-					#else
-					inline function set(i, c)
-						bytes.setInt32(i << 2, c);
-					#end
-					for (i in 0...w * h) {
-						var c = r.imageData[i];
-						c = (c >>> 24) | (c << 8);
-						set(i, c);
-					}
-				} else {
-					pixels = hxd.Pixels.alloc(w, h, ARGB);
-					var access:hxd.Pixels.PixelsARGB = pixels;
-					var p = 0;
-					for (y in 0...h) {
-						for (x in 0...w) {
-							var c = r.imageData[p++];
-							access.setPixel(x, y, c);
-						}
-					}
-				}
-				switch (r.header.imageOrigin) {
-					case BottomLeft: pixels.flipY();
-					case TopLeft: // nothing
-					default: throw "Not supported " + r.header.imageOrigin;
-				}
 			case Dds:
 				var pos = 128;
 				var mipLevel = 0;
@@ -456,7 +349,7 @@ class Image extends Resource {
 	}
 
 	#if hl
-	static function decodeJPG(src:haxe.io.Bytes, width:Int, height:Int, requestedFmt:hxd.PixelFormat) {
+	static function decodeSDL(src:haxe.io.Bytes, width:Int, height:Int, requestedFmt:hxd.PixelFormat) {
 		var outFmt = requestedFmt;
 		var ifmt:format.hl.Native.PixelFormat = switch (requestedFmt) {
 			case RGBA: RGBA;
@@ -467,45 +360,7 @@ class Image extends Resource {
 				BGRA;
 		};
 		var dst = haxe.io.Bytes.alloc(width * height * 4);
-		if (!format.hl.Native.decodeJPG(src.getData(), src.length, dst.getData(), width, height, width * 4, ifmt, 0))
-			return null;
-		var pix = new hxd.Pixels(width, height, dst, outFmt);
-		return pix;
-	}
-
-	static function decodePNG(src:haxe.io.Bytes, width:Int, height:Int, requestedFmt:hxd.PixelFormat) {
-		var outFmt = requestedFmt;
-		var ifmt:format.hl.Native.PixelFormat = switch (requestedFmt) {
-			case RGBA: RGBA;
-			case BGRA: BGRA;
-			case ARGB: ARGB;
-			case R16U: cast 12;
-			case RGB16U: cast 13;
-			case RGBA16U: cast 14;
-			case RG16U: cast 15;
-			default:
-				outFmt = BGRA;
-				BGRA;
-		};
-		var stride = 4; // row_stride is the step, in png_byte or png_uint_16 units	as appropriate, between adjacent rows
-		var pxsize = 4;
-		switch (outFmt) {
-			case R16U:
-				stride = 1;
-				pxsize = 2;
-			case RG16U:
-				stride = 2;
-				pxsize = 4;
-			case RGB16U:
-				stride = 3;
-				pxsize = 6;
-			case RGBA16U:
-				stride = 4;
-				pxsize = 8;
-			default:
-		}
-		var dst = haxe.io.Bytes.alloc(width * height * pxsize);
-		if (!format.hl.Native.decodePNG(src.getData(), src.length, dst.getData(), width, height, width * stride, ifmt, 0))
+		if (!format.hl.Native.imgDecode(src.getData(), src.length, dst.getData(), width, height, width * 4, ifmt, 0))
 			return null;
 		var pix = new hxd.Pixels(width, height, dst, outFmt);
 		return pix;
