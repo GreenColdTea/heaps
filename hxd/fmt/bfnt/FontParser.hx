@@ -12,19 +12,46 @@ class FontParser {
 		var tile : h2d.Tile = null;
 		var font : h2d.Font = new h2d.Font(null, 0);
 		var glyphs = font.glyphs;
+		var imageExts = ["png", "webp", "avif", "jxl", "jpg", "jpeg", "dds", "tga"];
+
+		inline function tryResolveWithExts( basePath : String ) : Null<{ tile : h2d.Tile, resolvedPath : String }> {
+			var found = null;
+			for ( ext in imageExts ) {
+				var candidate = haxe.io.Path.withExtension(basePath, ext);
+				try {
+					var t = resolveTile(candidate);
+					found = { tile : t, resolvedPath : candidate };
+					break;
+				} catch ( e : Dynamic ) {}
+			}
+			return found;
+		}
 
 		inline function resolveTileSameName() {
-			font.tilePath = new haxe.io.Path(path).file + ".png";
-			tile = resolveTile(haxe.io.Path.withExtension(path, "png"));
+			var res = tryResolveWithExts(path);
+			if ( res != null ) {
+				font.tilePath = haxe.io.Path.withoutDirectory(res.resolvedPath);
+				tile = res.tile;
+			} else {
+				font.tilePath = new haxe.io.Path(path).file + ".png";
+				tile = resolveTile(haxe.io.Path.withExtension(path, "png"));
+			}
 		}
 
 		inline function resolveTileWithFallback( tilePath : String ) {
+			var fullPath = haxe.io.Path.join([haxe.io.Path.directory(path), tilePath]);
 			try {
 				font.tilePath = tilePath;
-				tile = resolveTile(haxe.io.Path.join([haxe.io.Path.directory(path), tilePath]));
+				tile = resolveTile(fullPath);
 			} catch ( e : Dynamic ) {
-				trace('Warning: Could not find referenced font texture at "${tilePath}", trying to resolve same name as fnt!');
-				resolveTileSameName();
+				var res = tryResolveWithExts(fullPath);
+				if ( res != null ) {
+					font.tilePath = haxe.io.Path.withoutDirectory(res.resolvedPath);
+					tile = res.tile;
+				} else {
+					trace('Warning: Could not find referenced font texture at "${tilePath}", trying to resolve same name as fnt!');
+					resolveTileSameName();
+				}
 			}
 		}
 
