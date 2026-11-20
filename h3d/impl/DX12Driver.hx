@@ -144,8 +144,11 @@ class DxFrame {
 	public var copyBufferCursor : Int = 0;
 	public var fenceValue : Int64;
 	public var toRelease : Array<Resource> = [];
-	#if (hldx >= version("2.0.0"))
+	#if ((hldx >= version("2.0.0")) || (js && dx12))
 	public var placedToFree : Array<TextureData> = [];
+	#end
+	#if (hldx >= version("2.0.0"))
+	public var aftermath : AftermathContext;
 	#end
 	public var texHandlesToRelease : Array<h3d.mat.TextureHandle> = [];
 	public var bufHandlesToRelease : Array<h3d.BufferHandle> = [];
@@ -408,6 +411,7 @@ class ResourceData {
 	public var res : GpuResource;
 	public var state : ResourceState;
 	public var targetState : ResourceState;
+	public var stencilWrite = false;
 	public var generation = DX12Driver.generation;
 	public function new() {
 	}
@@ -504,7 +508,7 @@ class TextureData extends ResourceData {
 	var cpuViewBits : Int = -1;
 	var cpuViewIndex : Int = -1;
 	var cpuViewsMap : Map<Int, Int>;
-	#if (hldx >= version("2.0.0"))
+	#if ((hldx >= version("2.0.0")) || (js && dx12))
 	public var page : TextureHeapPage;
 	public var pagePos : Int;
 	public var pageSize : Int;
@@ -554,7 +558,7 @@ class TextureData extends ResourceData {
 	}
 }
 
-#if (hldx >= version("2.0.0"))
+#if ((hldx >= version("2.0.0")) || (js && dx12))
 class TextureHeapPage {
 	public var heap(default,null) : Heap;
 	public var size(default,null) : Int;
@@ -742,7 +746,7 @@ class DX12Driver extends h3d.impl.Driver {
 	var window : dx.Window;
 	var contextLost = new Map<h3d.Engine, Void -> Void>();
 	var frames : Array<DxFrame>;
-	#if (hldx >= version("2.0.0"))
+	#if ((hldx >= version("2.0.0")) || (js && dx12))
 	var textureHeap : TextureHeapAllocator;
 	#end
 	var frame : DxFrame;
@@ -828,6 +832,11 @@ class DX12Driver extends h3d.impl.Driver {
 	public static var inst(default, null) : DX12Driver;
 	public static var generation(default, null) = 0;
 	public static var DEBUG = false; // requires dxil.dll when set to true
+	public static var DRED = false;
+	#if (hldx >= version("2.0.0"))
+	static var aftermathMarkers = false;
+	#end
+	public static var GPU_VALIDATION = false; // requires DEBUG
 	public static var SUPPRESSED_MESSAGE_IDS : Array<Int> = [];
 
 	@:allow(h3d.impl) static function allocCheck<T>( f : Void -> T ) {
@@ -885,11 +894,14 @@ class DX12Driver extends h3d.impl.Driver {
 	}
 
 	function checkSM6_6() : Bool {
-		var hasSM6_6 = false;
+		var hasSM6_6 = true;
+		#if (hldx >= version("2.0.0"))
 		var shaderModel = new hl.Bytes(4);
-		shaderModel.setI32(0, HIGHEST_SHADER_MODEL);
-		Driver.checkFeatureSupport(SHADER_MODEL, shaderModel, 4);
+		shaderModel.setI32(0, SHADER_MODEL_6_6);
+		if( !Driver.checkFeatureSupport(SHADER_MODEL, shaderModel, 4) )
+			return false;
 		hasSM6_6 = cast(SHADER_MODEL_6_6, Int) <= shaderModel.getI32(0);
+		#end
 		return hasSM6_6;
 	}
 
@@ -914,13 +926,16 @@ class DX12Driver extends h3d.impl.Driver {
 		psoConfigCache?.load();
 
 		var flags = new DriverInitFlags();
-		if( DEBUG ) {
+		if( DEBUG )
 			flags.set(DriverInitFlag.DEBUG);
-		}
+		if( DRED )
+			flags.set(DriverInitFlag.DRED);
+		if( GPU_VALIDATION )
+			flags.set(DriverInitFlag.GPU_BASED_VALIDATION);
 		driver = Driver.create(window, flags, DEVICE_NAME);
 		if( DEBUG ) suppressDebugMessages();
 		frames = [];
-		#if (hldx >= version("2.0.0"))
+		#if ((hldx >= version("2.0.0")) || (js && dx12))
 		textureHeap = TEXTURE_HEAP_SIZE > 0 ? new TextureHeapAllocator(TEXTURE_HEAP_SIZE) : null;
 		#end
 
@@ -1065,6 +1080,10 @@ class DX12Driver extends h3d.impl.Driver {
 		frame = frames[currentFrame];
 		frame.allocator.reset();
 		frame.commandList.reset(frame.allocator, null);
+		#if (hldx >= version("2.0.0"))
+		if( aftermathMarkers && frame.aftermath == null )
+			frame.aftermath = AftermathContext.createContext(frame.commandList);
+		#end
 
 		// if too much memory was allocated from last frame, let's dispose immediately
 		var forceDispose = (frame.bufferAllocator.getSize()/(1024*1024)) >= 512;
@@ -1075,7 +1094,7 @@ class DX12Driver extends h3d.impl.Driver {
 		frame.copyBufferCursor = 0;
 		while( frame.toRelease.length > 0 )
 			frame.toRelease.pop().release();
-		#if (hldx >= version("2.0.0"))
+		#if ((hldx >= version("2.0.0")) || (js && dx12))
 		while( frame.placedToFree.length > 0 )
 			textureHeap.free(frame.placedToFree.pop());
 		#end
@@ -1160,7 +1179,7 @@ class DX12Driver extends h3d.impl.Driver {
 				frame.commandList.clearRenderTargetView(tmp.renderTargets[i], clear);
 			}
 			if ( needRebind )
-				frame.commandList.omSetRenderTargets(count, tmp.renderTargets, true, depthEnabled ? getDepthViewFromTexture(currentRenderTargets[0], currentRenderTargets[0].depthBuffer.t.state & DEPTH_WRITE == COMMON ) : null);
+				frame.commandList.omSetRenderTargets(count, tmp.renderTargets, true, depthEnabled ? getDepthViewFromTexture(currentRenderTargets[0], currentDepthBinding(currentRenderTargets[0].depthBuffer.t)) : null);
 			// clear backbuffer
 			if( count == 0 )
 				frame.commandList.clearRenderTargetView(frame.backBufferView, clear);
@@ -1310,6 +1329,10 @@ class DX12Driver extends h3d.impl.Driver {
 	}
 
 	function transition( res : ResourceData, to : ResourceState ) {
+		if( to != COMMON && res.targetState & DEPTH_READ != COMMON && res.targetState & to == to )
+			return;
+		if( res.stencilWrite )
+			setStencilWrite(res, false);
 		if( res.targetState == to )
 			return;
 
@@ -1333,6 +1356,20 @@ class DX12Driver extends h3d.impl.Driver {
 		if (res.state == res.targetState)
 			tmp.resourcesToTransition[tmp.barrierCount++] = res;
 		res.targetState = to;
+	}
+
+	function setStencilWrite( res : ResourceData, b : Bool ) {
+		if( res.stencilWrite == b )
+			return;
+		if( b ) flushTransitions();
+		var sb = tmp.barrier;
+		@:privateAccess sb.type = TRANSITION;
+		sb.resource = res.res;
+		sb.subResource = 1;
+		sb.stateBefore = b ? res.state : DEPTH_WRITE;
+		sb.stateAfter = b ? DEPTH_WRITE : res.state;
+		frame.commandList.resourceBarrier(sb);
+		res.stencilWrite = b;
 	}
 
 	function flushTransitions() {
@@ -1366,7 +1403,11 @@ class DX12Driver extends h3d.impl.Driver {
 			frame.commandList.resourceBarriers(tmp.barriers, totalBarrier);
 	}
 
-	function getDepthViewFromTexture( tex : h3d.mat.Texture, readOnly : Bool ) {
+	function currentDepthBinding( t : ResourceData ) : h3d.Engine.DepthBinding {
+		return t.stencilWrite ? ReadOnlyDepth : t.state & DEPTH_WRITE == COMMON ? ReadOnly : ReadWrite;
+	}
+
+	function getDepthViewFromTexture( tex : h3d.mat.Texture, binding : h3d.Engine.DepthBinding ) {
 		if ( tex != null && tex.depthBuffer == null ) {
 			depthEnabled = false;
 			return null;
@@ -1377,33 +1418,41 @@ class DX12Driver extends h3d.impl.Driver {
 			if( w != tex.width || h != tex.height )
 				throw "Depth size mismatch";
 		}
-		return getDepthView(tex == null ? null : tex.depthBuffer, readOnly);
+		return getDepthView(tex == null ? null : tex.depthBuffer, binding);
 	}
 
-	function getDepthView( depthBuffer : h3d.mat.Texture, readOnly : Bool, layer = 0 ) {
+	function getDepthView( depthBuffer : h3d.mat.Texture, binding : h3d.Engine.DepthBinding, layer = 0 ) {
 		if ( depthBuffer == null )
 			depthBuffer = getDefaultDepthBuffer();
 		if( depthBuffer.t == null ) depthBuffer.alloc();
+		var isArray = depthBuffer.flags.has(IsArray) || depthBuffer.flags.has(Cube);
+		var hasStencil = depthBuffer.format == Depth24Stencil8 || depthBuffer.format == Depth32Stencil8;
+		var stencilWrite = binding == ReadOnlyDepth && hasStencil && !isArray;
+		var readOnly = binding == ReadOnly || (binding == ReadOnlyDepth && !stencilWrite);
 		var depthView = depthStenciViews.alloc(1);
 		var viewDesc = tmp.dstStencilViewDesc;
 		viewDesc.arraySize = 1;
 		viewDesc.mipSlice = 0;
 		viewDesc.firstArraySlice = layer;
 		viewDesc.format = toDxgiDepthFormat(depthBuffer.format);
-		viewDesc.viewDimension = depthBuffer.flags.has(IsArray) || depthBuffer.flags.has(Cube) ? TEXTURE2DARRAY : TEXTURE2D;
-		if ( readOnly ) {
+		viewDesc.viewDimension = isArray ? TEXTURE2DARRAY : TEXTURE2D;
+		viewDesc.flags = new haxe.EnumFlags();
+		if ( readOnly || stencilWrite )
 			viewDesc.flags.set(READ_ONLY_DEPTH);
+		if ( readOnly )
 			viewDesc.flags.set(READ_ONLY_STENCIL);
-		} else {
-			viewDesc.flags = new haxe.EnumFlags();
-		}
 		Driver.createDepthStencilView(depthBuffer.t.res, viewDesc, depthView);
 		var depths = tmp.depthStencils;
 		depths[0] = depthView;
 		depthEnabled = true;
-		var acceptedState = readOnly ? DEPTH_READ | DEPTH_WRITE : DEPTH_WRITE;
-		if ( depthBuffer.t.state & acceptedState == COMMON )
-			transition(depthBuffer.t, readOnly ? DEPTH_READ : DEPTH_WRITE);
+		if( !stencilWrite )
+			setStencilWrite(depthBuffer.t, false);
+		if( readOnly || stencilWrite )
+			transition(depthBuffer.t, DEPTH_READ | ALL_SHADER_RESOURCE);
+		else if ( depthBuffer.t.state & DEPTH_WRITE == COMMON )
+			transition(depthBuffer.t, DEPTH_WRITE);
+		if( stencilWrite )
+			setStencilWrite(depthBuffer.t, true);
 		return depths;
 	}
 
@@ -1479,7 +1528,7 @@ class DX12Driver extends h3d.impl.Driver {
 			flushTransitions();
 			frame.commandList.clearRenderTargetView(tmp.renderTargets[0], clear);
 		}
-		frame.commandList.omSetRenderTargets(1, tmp.renderTargets, true, depthEnabled ? getDepthViewFromTexture(tex, depthBinding == ReadOnly ) : null);
+		frame.commandList.omSetRenderTargets(1, tmp.renderTargets, true, depthEnabled ? getDepthViewFromTexture(tex, depthBinding) : null);
 
 		while( currentRenderTargets.length > 0 ) currentRenderTargets.pop();
 		if( tex != null ) currentRenderTargets.push(tex);
@@ -1544,7 +1593,7 @@ class DX12Driver extends h3d.impl.Driver {
 				frame.commandList.clearRenderTargetView(tmp.renderTargets[i], clear);
 			}
 		}
-		frame.commandList.omSetRenderTargets(textures.length, tmp.renderTargets, true, depthEnabled ? getDepthViewFromTexture(t0, depthBinding == ReadOnly) : null);
+		frame.commandList.omSetRenderTargets(textures.length, tmp.renderTargets, true, depthEnabled ? getDepthViewFromTexture(t0, depthBinding) : null);
 		initViewport(t0.width, t0.height);
 
 		var depthBuffer = t0 == null ? defaultDepth : t0.depthBuffer;
@@ -1555,7 +1604,7 @@ class DX12Driver extends h3d.impl.Driver {
 	}
 
 	override function setDepth(depthBuffer : h3d.mat.Texture, layer = 0) {
-		var view = getDepthView(depthBuffer, false, layer);
+		var view = getDepthView(depthBuffer, ReadWrite, layer);
 		depthEnabled = true;
 		frame.commandList.omSetRenderTargets(0, null, true, view);
 		markUsed(depthBuffer);
@@ -2523,7 +2572,7 @@ class DX12Driver extends h3d.impl.Driver {
 			desc.flags.set(ALLOW_UNORDERED_ACCESS);
 
 		td.state = td.targetState = isRT ? RENDER_TARGET : COMMON;
-		#if (hldx >= version("2.0.0"))
+		#if ((hldx >= version("2.0.0")) || (js && dx12))
 		var placedSize = textureHeap == null || isRT || t.flags.has(Writable) ? -1 : textureHeap.getAllocSize(t, desc);
 		if( placedSize > 0 )
 			td.res = textureHeap.alloc(td, desc, placedSize);
@@ -2593,12 +2642,12 @@ class DX12Driver extends h3d.impl.Driver {
 		if( frameFence.getValue() >= t.t.lastUseFence ) {
 			t.t.res.release();
 			t.t.res = null;
-			#if (hldx >= version("2.0.0"))
+			#if ((hldx >= version("2.0.0")) || (js && dx12))
 			textureHeap?.free(t.t);
 			#end
 		} else {
 			disposeResource(t.t);
-			#if (hldx >= version("2.0.0"))
+			#if ((hldx >= version("2.0.0")) || (js && dx12))
 			if( t.t.page != null ) frame.placedToFree.push(t.t);
 			#end
 		}
@@ -2761,7 +2810,7 @@ class DX12Driver extends h3d.impl.Driver {
 		flushTransitions();
 		// the previous allocation is used by the copy : always release it later
 		disposeResource(prev);
-		#if (hldx >= version("2.0.0"))
+		#if ((hldx >= version("2.0.0")) || (js && dx12))
 		if( prev.page != null ) frame.placedToFree.push(prev);
 		#end
 		disposeTextureViews(prev);
@@ -3478,11 +3527,19 @@ class DX12Driver extends h3d.impl.Driver {
 		#if heaps_debug_events
 		frame.commandList.pixBeginEvent(0, @:privateAccess name.bytes);
 		#end
+		#if (hldx >= version("2.0.0"))
+		if( frame.aftermath != null )
+			frame.aftermath.beginEvent(@:privateAccess name.bytes);
+		#end
 	}
 
 	override function endEvent() {
 		#if heaps_debug_events
 		frame.commandList.pixEndEvent();
+		#end
+		#if (hldx >= version("2.0.0"))
+		if( frame.aftermath != null )
+			frame.aftermath.endEvent();
 		#end
 	}
 
@@ -3820,6 +3877,9 @@ class DX12Driver extends h3d.impl.Driver {
 			}
 		}
 		Driver.setGpuCrashHandler(wrapper);
+		#if (hldx >= version("2.0.0"))
+		aftermathMarkers = true;
+		#end
 	}
 	#end
 }
